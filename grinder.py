@@ -336,14 +336,16 @@ def process(repo, store, options):
     for bug in store.find(Bug):
         patches = set()
         for commit in bug.commits.find(And(expressions)):
-            #PreviousEdit = ClassAlias(Edit)
+            PreviousEdit = ClassAlias(Edit)
+            bugs = Select(BugCommit.commit_id, distinct=True)
             #edits = Select(Edit.id, Edit.commit_id == commit.id)
             #result = store.find((Commit, PreviousEdit),
             #                   Commit.id == PreviousEdit.commit_id,
             #                   (PreviousEdit.new_file_id == Edit.old_file_id) &
             #                   (PreviousEdit.new_line == Edit.old_line) &
             #                   (Commit.date < commit.date) &
-            #                   Edit.id.is_in(edits))
+            #                   Edit.id.is_in(edits) &
+            #                   PreviousEdit.commit_id.is_in(bugs))
             #patches = set([c[0] for c in result])
 
             for edit in commit.edits:
@@ -351,12 +353,15 @@ def process(repo, store, options):
                 result = store.using(*origin).find(Commit,
                             (Commit.date < commit.date) &
                             (Edit.new_file_id == edit.old_file_id) &
-                            (Edit.new_line == edit.old_line))
+                            (Edit.new_line == edit.old_line) &
+                            Edit.commit_id.is_in(bugs))
                 c = result.order_by(Desc(Commit.date)).first()
                 if c: patches.add(c)
 
         if len(patches) != 0:
-            print('#%s [%s]\n' % (bug.bug_no, ', '.join(['%s' % c.hex for c in patches])))
+            print('#%s (%s): [%s]\n' % (bug.bug_no,
+                ', '.join(['%s' % c.hex for c in bug.commits]),
+                ', '.join(['%s' % c.hex for c in patches])))
 
 
 def parse_from_date(option, opt_str, value, parser):
