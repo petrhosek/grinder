@@ -22,7 +22,6 @@ import tempfile
 import logging
 import sqlite3
 
-from docopt import docopt
 from optparse import OptionParser
 from pygit2 import *
 from datetime import datetime
@@ -248,7 +247,7 @@ def setup(database_path):
 
 
 def build(repo, store, options):
-    for c in repo.walk(repo.head.oid, GIT_SORT_REVERSE):
+    for c in repo.walk(repo.head.target, GIT_SORT_REVERSE):
         logger.info('commit %s', c.hex)
 
         # Store commit
@@ -276,53 +275,54 @@ def build(repo, store, options):
 
             logger.debug('parent %s', p.hex)
 
-            diff = p.tree.diff(c.tree)
-            if 'hunks' not in diff.changes:
-                continue
+            diff = p.tree.diff_to_tree(c.tree, GIT_DIFF_IGNORE_WHITESPACE_EOL)
 
-            for h in [f for f in diff.changes['hunks'] if splitext(f.old_file)[1] in ['.c', '.h']]:
-                old_file = store.find(File, File.path == h.old_file.decode('utf-8')).one()
+            for p in [p for p in diff if splitext(p.old_file_path)[1] in ['.c', '.h']]:
+                logger.debug('path %s', p.old_file_path)
+
+                old_file = store.find(File, File.path == p.old_file_path.decode('utf-8')).one()
                 if old_file is None:
-                    old_file = store.add(File(h.old_file.decode('utf-8')))
-                new_file = store.find(File, File.path == h.new_file.decode('utf-8')).one()
+                    old_file = store.add(File(p.old_file_path.decode('utf-8')))
+                new_file = store.find(File, File.path == p.new_file_path.decode('utf-8')).one()
                 if new_file is None:
-                    new_file = store.add(File(h.new_file.decode('utf-8')))
+                    new_file = store.add(File(p.new_file_path.decode('utf-8')))
                 store.flush()
 
-                old_data = [l for l in h.data if l[1] != GIT_DIFF_LINE_ADDITION]
-                new_data = [l for l in h.data if l[1] != GIT_DIFF_LINE_DELETION]
+                for h in p.hunks:
+                    old_data = [l for l in h.lines if l[0] != '+']
+                    new_data = [l for l in h.lines if l[0] != '-']
 
-                logger.debug('hunk old:%d-%d, new:%d-%d', h.old_start, h.old_lines, h.new_start, h.new_lines)
+                    logger.debug('hunk old:%d-%d, new:%d-%d', h.old_start, h.old_lines, h.new_start, h.new_lines)
 
-                deletions = [(l[0], i) for i, l in enumerate(old_data) if l[1] == GIT_DIFF_LINE_DELETION]
-                additions = [(l[0], i) for i, l in enumerate(new_data) if l[1] == GIT_DIFF_LINE_ADDITION]
+                    deletions = [(l[1], i) for i, l in enumerate(old_data) if l[0] == '-']
+                    additions = [(l[1], i) for i, l in enumerate(new_data) if l[0] == '+']
 
-                # Identify changed lines
-                changed_lines = []
-                if len(deletions) != 0 and len(additions) != 0:
-                    d = map(lambda (x, y): levenshtein_distance(x[0], y[0], True), product(deletions, additions))
-                    step = len(additions)
-                    matrix = [d[x:x+step] for x in xrange(0, len(d), step)]
+                    # Identify changed lines
+                    changed_lines = []
+                    if len(deletions) != 0 and len(additions) != 0:
+                        d = map(lambda (x, y): levenshtein_distance(x[0], y[0], True), product(deletions, additions))
+                        step = len(additions)
+                        matrix = [d[x:x+step] for x in xrange(0, len(d), step)]
 
-                    indexes = hungarian(matrix)
-                    changed_lines = [(deletions[i][1], additions[j][1]) for i, j in indexes if 0.0 < matrix[i][j] and matrix[i][j] < 0.4]
+                        indexes = hungarian(matrix)
+                        changed_lines = [(deletions[i][1], additions[j][1]) for i, j in indexes if 0.0 < matrix[i][j] and matrix[i][j] < 0.4]
 
-                # Store all changed lines
-                for x, y in changed_lines:
-                    store.add(Edit(commit, old_file, new_file, h.old_start + x, h.new_start + y))
+                    # Store all changed lines
+                    for x, y in changed_lines:
+                        store.add(Edit(commit, old_file, new_file, h.old_start + x, h.new_start + y))
 
-                # Store all deleted lines
-                for l, x in deletions:
-                    if x not in [i for i, j in changed_lines]:
-                        store.add(Edit(commit, old_file, new_file, h.old_start + x, None))
+                    # Store all deleted lines
+                    for l, x in deletions:
+                        if x not in [i for i, j in changed_lines]:
+                            store.add(Edit(commit, old_file, new_file, h.old_start + x, None))
 
-                # Store all added lines
-                for l, y in additions:
-                    if y not in [j for i, j in changed_lines]:
-                        store.add(Edit(commit, old_file, new_file, None, h.new_start + y))
+                    # Store all added lines
+                    for l, y in additions:
+                        if y not in [j for i, j in changed_lines]:
+                            store.add(Edit(commit, old_file, new_file, None, h.new_start + y))
 
-                store.flush()
-
+                    store.flush()
+                    
         # Save the changes
         store.commit()
 
@@ -373,8 +373,6 @@ def parse_to_date(option, opt_str, value, parser):
 
 
 def main():
-    #args = docopt(__doc__, argv=sys.argv[1:], help=True, version='0.1.0')
-
     parser = OptionParser(usage="usage: %prog [options] path")
     parser.add_option('-d', '--database',
             metavar="FILE", dest="database", default="db.sqlite",
